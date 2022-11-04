@@ -193,21 +193,21 @@ We can then confirm that the account hash is valid by using crackmapexec:
 
 So we managed to get the machine account of a domain-joined machine from a local service account. With the domain-joined machine account, you can then become an administrator on the compromised machine or search for vulnerabilities in the Active Directory.
 
-An alternative way to upgrade our machine account TGT to a NT hash is to use the [Shadow Credentials](https://posts.specterops.io/shadow-credentials-abusing-key-trust-account-mapping-for-takeover-8ee1a53566ab) technique. Indeed the machine account has the possibility to modify its properties (especially the attribute **msDS-KeyCredentialLink**).
+{{note}} An alternative way to upgrade our machine account TGT to a NT hash is to use the [Shadow Credentials](https://posts.specterops.io/shadow-credentials-abusing-key-trust-account-mapping-for-takeover-8ee1a53566ab) technique. Indeed the machine account has the possibility to modify its properties (especially the attribute **msDS-KeyCredentialLink**).{{end}}
 
 ## From machine account to SYSTEM
 
 To become SYSTEM with the machine account, we will forge a Silver ticket on the **CIFS** service.  To do this we need the domain SID, a domain user which is an administrator on the machine, the full domain name and NT hash of the machine account.
 
-1. The domain SID can be obtained anonymously by running **rpcclient** on the domain controller:
+- The domain SID can be obtained anonymously by running **rpcclient** on the domain controller:
 
 ![domain_sid](/assets/img/CertPotato/domain_sid.png)
 
-2. The full domain name can be obtained with crackmapexec:
+- The full domain name can be obtained with crackmapexec:
 
 ![full_domain](/assets/img/CertPotato/full_domain.png)
 
-3. Among the administrators of the machine, we can take an administrator of the domain. That information can be retrieved through the webshell we got earlier:
+- Among the administrators of the machine, we can take an administrator of the domain. That information can be retrieved through the webshell we got earlier:
 
 ![admin](/assets/img/CertPotato/admin.png)
 
