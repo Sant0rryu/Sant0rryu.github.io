@@ -1,12 +1,14 @@
 ---
 layout: post
-title:  "CertPotato - Using ADCS to privesc from services accounts to domain-joined machine accounts"
+title:  "CertPotato – Using ADCS to privesc from virtual and network service accounts to local system"
 category : ADCS
 tags :  Privesc AD ADCS Service
 ---
 
 
 The goal of this blog post is to present a privilege escalation I found while working on ADCS. We will see how it is possible to elevate our privilege to the NT AUTHORITY\\System from a local service account of a domain-joined machine (for example a webshell on a Windows server).
+
+One of the popular techniques for getting the SYSTEM from a virtual or network service account is [Delegate 2 Thyself](https://exploit.ph/delegate-2-thyself.html) by Charlie Clark. This technique involves using RBCD to elevate your privileges. In this article, I propose an alternative approach to become local SYSTEM using ADCS.
 
 # ADCS 101
 
@@ -138,19 +140,17 @@ certutil -dsTemplate Machine
 
 # Abuse this configuration
 
-The main goal of this exploit will be to take advantage of the machine account authentication over the network in order to obtain a valid TGT. Using this TGT we will then be able to request a certificate from the certification authority.
+So, our service IIS run as a virtual account, therefore on domain operations we act as the underlying machine account. Our goal is to target ADCS and request a certificate, but to do that we need the password of the machine account (which requires privessc to begin with), or a usable TGT of it. That’s where TGTdeleg comes into play.
 
 ## Get a usable TGT
-
-To request a certificate as a machine account, you need the credentials or a TGT ticket associated with the machine account.
 
 As Charlie Clark mentions in his [post](https://exploit.ph/delegate-2-thyself.html), Benjamin Delpy found a way to get a usable TGT . This technique is called the [tgtdeleg trick](https://twitter.com/gentilkiwi/status/998219775485661184) and it's also been implemented in [Rubeus](https://github.com/GhostPack/Rubeus#tgtdeleg).
 
 ### What is the TGT delegation trick ?
 
-Any server or service account that is granted unconstrained delegation rights is able to impersonate a user to authenticate to any service on any host. Indeed, when a user wants to access a service or a server with this right, in the **AP_REQ** packet, the authenticator will contain a forwardable TGT and the associated session key. The authenticator is encrypted with a different session key issued when the service ticket was requested from the Ticket Granting Service.
+Any account with an SPN record (machine or otherwise) that is granted unconstrained delegation rights is able to impersonate a user to authenticate to any service on any host. Indeed, when a user wants to access a service or a server with this right, in the **AP_REQ** packet, the authenticator will contain a forwardable TGT and the associated session key. The authenticator is encrypted with a different session key issued when the service ticket was requested from the Ticket Granting Service.
 
-So if we get the key used to encrypt the authenticator as well as the **AP_REQ** packet, we can recover a forwardable TGT of our user and its associated session key.
+So if we manage to retrieve the AP_REQ packet and the key used to encrypt the authenticator, we will be able recover the delegation TGT of our user and its associated session key.
 
 Using the functions of the SSPI/GSS-API, in particular the InitializeSecurityContext() function and providing the targeted SPN, we will obtain a structure (an SSPI SecBuffer structure) that will allow us to recover the **AP_REQ**. For the session key used to encrypt the authenticator, it can be retrieved from the [local Kerberos cache](https://github.com/GhostPack/Rubeus/blob/4c9145752395d48a73faf326c4ae57d2c565be7f/Rubeus/lib/LSA.cs#L1222).
 
@@ -158,7 +158,7 @@ So here's the trick, with our user context, we call the InitializeSecurityContex
 
 ### Back to the topic
 
-So we upload Rubeus on the compromised machine, then to obtain a forwadable TGT we launch the following command `Rubeus.exe tgtdeleg /nowrap`:
+So we upload Rubeus on the compromised machine, then to obtain a delegation TGT we launch the following command `Rubeus.exe tgtdeleg /nowrap`:
 
 
 ![Rubeus](/assets/img/CertPotato/Rubeus.png)
@@ -261,6 +261,8 @@ impacket-psexec namek.local/Cellmax@iis.namek.local -k -no-pass
 # Conclusion
 
 ADCS brings a new way to take control of a service account. From a simple shell as NetworkService or Virtual Accounts, we manage to take control of the machine.
+
+Several Windows events are generated when using this technique. During the use of the TGT delegation trick or PKINIT authentication, Kerberos logs are generated (event 4768) on the domain controller, and when interacting with the certification authority (CA), logs are generated on the server where the ADCS role is installed (events 4886, 4887). However, monitoring all these Windows events could be quite complicated as they correspond to normal activity in an Active Directory network.
 
 The gMSA and sMSA accounts can be a solution against this type of attack, however it is necessary to ensure that the rights on the Active Directory of these accounts are sufficiently restrictive. In case of compromision of these services accounts, an attacker could not pivot on the internal network.
 
